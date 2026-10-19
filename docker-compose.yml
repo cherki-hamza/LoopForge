@@ -1,0 +1,136 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: loopforge_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-loopforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-loopforge}
+      POSTGRES_DB: ${POSTGRES_DB:-loopforge}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-loopforge} -d ${POSTGRES_DB:-loopforge}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: loopforge_redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6380}:6379"
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: loopforge_api
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-loopforge}:${POSTGRES_PASSWORD:-loopforge}@postgres:5432/${POSTGRES_DB:-loopforge}
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_DIR: /app/storage
+      JWT_SECRET: ${JWT_SECRET:-loopforge-super-secret-jwt-key-2026-production-ready}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-loopforge2026}
+      MAX_FILE_SIZE_MB: ${MAX_FILE_SIZE_MB:-500}
+      MAX_CLIP_DURATION_SECONDS: ${MAX_CLIP_DURATION_SECONDS:-120}
+      MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-10}
+      RETENTION_DAYS: ${RETENTION_DAYS:-14}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+    volumes:
+      - storage_data:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: loopforge_worker
+    restart: unless-stopped
+    command: celery -A app.core.celery_app worker -l info --concurrency=10
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-loopforge}:${POSTGRES_PASSWORD:-loopforge}@postgres:5432/${POSTGRES_DB:-loopforge}
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_DIR: /app/storage
+      JWT_SECRET: ${JWT_SECRET:-loopforge-super-secret-jwt-key-2026-production-ready}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-loopforge2026}
+      MAX_FILE_SIZE_MB: ${MAX_FILE_SIZE_MB:-500}
+      MAX_CLIP_DURATION_SECONDS: ${MAX_CLIP_DURATION_SECONDS:-120}
+      MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-10}
+      RETENTION_DAYS: ${RETENTION_DAYS:-14}
+    volumes:
+      - storage_data:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: loopforge_beat
+    restart: unless-stopped
+    command: celery -A app.core.celery_app beat -l info
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-loopforge}:${POSTGRES_PASSWORD:-loopforge}@postgres:5432/${POSTGRES_DB:-loopforge}
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_DIR: /app/storage
+      JWT_SECRET: ${JWT_SECRET:-loopforge-super-secret-jwt-key-2026-production-ready}
+      RETENTION_DAYS: ${RETENTION_DAYS:-14}
+    volumes:
+      - storage_data:/app/storage
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api}
+    container_name: loopforge_web
+
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-3001}:3000"
+
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000/api
+    depends_on:
+      api:
+        condition: service_healthy
+
+
+volumes:
+  postgres_data:
+  storage_data:
